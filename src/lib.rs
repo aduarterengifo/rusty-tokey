@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 const PAT: &str = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
 
+// TODO: maybe start accepting &[u8] instead? keep in mind all hell might break loose.
 
 static RE: Lazy<Regex> = Lazy::new(|| Regex::new(PAT).unwrap());
 
@@ -28,7 +29,7 @@ fn decrement_or_remove<T: std::cmp::Eq + Hash>(map: &mut HashMap<T, usize>, key:
     match map.entry(key) {
         Entry::Occupied(mut entry) => {
             // add
-            *entry.get_mut() -= amount;
+            *entry.get_mut() = entry.get_mut().saturating_sub(amount);
             
             // if the value becomes 0 as a result remove.
             if *entry.get() == 0 {
@@ -83,23 +84,40 @@ fn get_pairs(
 fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
     println!("we are inside rusty_merge");
     // println!("{:?}", tok_to_count);
-    let mut max_pairs = vec![(vec![0; 0], vec![0; 0]); max];
+    let mut max_pairs = vec![(vec![0; 0], vec![0; 0]); 0];
     let (mut pair_to_count, mut pair_to_toks) = get_pairs(&tok_to_count);
+
+    // let max_count_2 =  pair_to_count[&("w".as_bytes().to_vec(),"w".as_bytes().to_vec())];
+    // println!("max_count {}", max_count_2);
     // TODO: maintain heap of max-pairs, instead of finding the max_pair on every loop.
 
     while max_pairs.len() < max {
-        let max_pair_opt = max_pairs.iter()
-        .max_by_key(|(_, count)| count)
-        .map(|pair| pair.clone());
+        let max_pair_opt = pair_to_count.iter()
+        .max_by_key(|(pair, count)| (*count, *pair))
+        .map(|pair| pair.0.clone());
+
+        // let max_count =  pair_to_count.get(&("h".as_bytes().to_vec(),"e".as_bytes().to_vec()));
+        // println!("max_count {:?}", max_count.or_else(|| Some(&0)));
+
+        // let max_count_2 =  pair_to_count.get(&(" ".as_bytes().to_vec(),"t".as_bytes().to_vec()));
+        // println!("max_count_2 {:?}", max_count_2.or_else(|| Some(&0)));
+
+        // let max_count_3 =  pair_to_count.get(&(" ".as_bytes().to_vec(),"a".as_bytes().to_vec()));
+        // println!("max_count_3 {:?}", max_count_3.or_else(|| Some(&0)));
 
         // if there is a max_pair 
         if let Some(max_pair) = max_pair_opt {
             max_pairs.push(max_pair.clone());
             // ---------------- EFFICIENTLY UPDATE ----------------
             let max_pair_to_toks = &pair_to_toks[&max_pair];
-
+            // println!("max_pair_to_toks: {:?}", max_pair_to_toks);
             // for every tok that contains max_pair
             for tok in max_pair_to_toks.clone() {
+                match tok_to_count.entry(tok.clone()) {
+                    Entry::Occupied(_) => (),
+                    Entry::Vacant(_) => continue, // Skip if doesn't exist
+                };
+
                 let tok_count = tok_to_count[&tok.clone()];
 
                 // for every pair in tok
@@ -118,7 +136,7 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
 
                     match pair_to_count.entry(pair.clone()) {
                         std::collections::hash_map::Entry::Occupied(mut e) => {
-                            *e.get_mut() -= tok_count; // remove tok_count from pair count. 
+                            *e.get_mut() = e.get_mut().saturating_sub(tok_count); // remove tok_count from pair count. 
                             
                             // if pair's count is zero.
                             if *e.get() == 0 {
@@ -140,6 +158,7 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
                 while i < tok.len() {
                     if i < tok.len() - 1 && (tok[i].clone(), tok[i+1].clone()) == max_pair {
                         let new_vocab = [&tok[i][..], &tok[i+1][..]].concat();
+                        println!("new_vocab {:?}", String::from_utf8(new_vocab.clone()));
                         new_tok.push(new_vocab);
                         i += 2;
                     } else {
@@ -147,6 +166,8 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
                         i += 1
                     }
                 }
+
+                // println!("new_tok {:?}", new_tok.clone().iter().map(|x| String::from_utf8(x.clone()).unwrap()).collect::<Vec<String>>().join("") );
 
                 // increment new_tok count by tok_count
                 *tok_to_count.entry(new_tok.clone()).or_insert(0) += tok_count;
@@ -157,41 +178,27 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
 
                 // for every pair in new_tok
                 for i in 0..new_tok.clone().len() - 1 {
-                    let pair = (tok[i].clone(), tok[i+1].clone());
+                    let pair = (new_tok[i].clone(), new_tok[i+1].clone());
                     
                     match pair_to_toks.entry(pair.clone()) {
+                        // old_pair
                         std::collections::hash_map::Entry::Occupied(mut e) => {
-                            let set = e.get_mut();
-
-                            // remove from pair's toks.
-                            set.insert(new_tok.clone());
+                            // insert new_tok
+                            e.get_mut().insert(new_tok.clone());
                         }
-                        std::collections::hash_map::Entry::Vacant(_) => {}
+                        // new pair
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(HashSet::from_iter([new_tok.clone()]));
+                        }
                     }
 
-                    match pair_to_count.entry(pair.clone()) {
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            *e.get_mut() -= tok_count; // remove tok_count from pair count. 
-                            
-                            // if pair's count is zero.
-                            if *e.get() == 0 {
-                                // remove pair's pair_to_count entry
-                                e.remove();
-
-                                // TODO: also remove the pair's pair_to_toks entry
-                            }
-                        }
-                        std::collections::hash_map::Entry::Vacant(_) => {}
-                    }
+                    *pair_to_count.entry(pair.clone()).or_insert(0) += tok_count;
                 }
-            }
-
-
-            
+            }            
             // ---------------- EFFICIENTLY UPDATE ----------------
+        } else {
+            break;
         }
-
-
     };
     // println!("{:?}", max_pairs);
     Ok(max_pairs)
@@ -235,7 +242,7 @@ fn rusty_get_chunk_pre_toks(filepath: &str, start: u64, end: u64, special_tokens
     println!("{}", chunk);
     println!("------ chunk ------");
     for regex_match in re_special_toks.split(&chunk).flat_map(|subchunk| RE.find_iter(subchunk.unwrap())) {
-        println!("match {}", regex_match.clone().unwrap().as_str());
+        // println!("match {}", regex_match.clone().unwrap().as_str());
         let key: Vec<Vec<u8>>  = regex_match.unwrap().as_str().chars().map(|c| c.to_string().as_bytes().to_vec()).collect();
 
         // += 1

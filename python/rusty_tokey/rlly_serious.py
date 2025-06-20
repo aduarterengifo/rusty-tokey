@@ -188,26 +188,12 @@ def train_bpe(
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     special_tokens_len = len(special_tokens)
     stopping_condition = vocab_size - 256 - special_tokens_len
-    pattern = re.compile("|".join([re.escape(tok) for tok in special_tokens]))
     # open the input path
     with open(input_path, "rb") as f:
         # find the chunk boundaries
         boundaries = find_chunk_boundaries(f, 16, "<|endoftext|>".encode("utf-8"))
-        # num_workers = min(mp.cpu_count(), len(boundaries) - 1)
-        # with mp.Pool(processes=num_workers) as pool:
-        #     results = pool.starmap(
-        #         rusty_pre_tokenize_chunk,
-        #         [(input_path, start, end, pattern, special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])],
-        #     )
-        # results = [pre_tokenize_chunk(chunk) for chunk in chunks]
-        # combined = Counter()
 
-        # for d in results:
-        #     combined.update(d)
-
-        # max_pairs = rusty_merge(combined, stopping_condition)
-
-        max_pairs = rusty_full_merge(input_path, boundaries, special_tokens, vocab_size)
+        max_pairs = rusty_full_merge(input_path, boundaries, special_tokens, stopping_condition)
         # print('max_pairs', max_pairs)
         vocab: dict[int, bytes] = {}
         # single-bytes
