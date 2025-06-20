@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BinaryHeap};
+use std::cmp::Ordering;
 use std::hash::Hash;
 use std::collections::hash_map::Entry;
 use fancy_regex::Regex;
@@ -10,7 +11,9 @@ use rayon::prelude::*;
 
 const PAT: &str = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
 
-// TODO: maybe start accepting &[u8] instead? keep in mind all hell might break loose.
+// (NVM) TODO: maybe start accepting &[u8] instead? keep in mind all hell might break loose.
+
+// TODO: actually use Cow<u8> instead of Vec<u8>
 
 static RE: Lazy<Regex> = Lazy::new(|| Regex::new(PAT).unwrap());
 
@@ -96,15 +99,6 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
         .max_by_key(|(pair, count)| (*count, *pair))
         .map(|pair| pair.0.clone());
 
-        // let max_count =  pair_to_count.get(&("h".as_bytes().to_vec(),"e".as_bytes().to_vec()));
-        // println!("max_count {:?}", max_count.or_else(|| Some(&0)));
-
-        // let max_count_2 =  pair_to_count.get(&(" ".as_bytes().to_vec(),"t".as_bytes().to_vec()));
-        // println!("max_count_2 {:?}", max_count_2.or_else(|| Some(&0)));
-
-        // let max_count_3 =  pair_to_count.get(&(" ".as_bytes().to_vec(),"a".as_bytes().to_vec()));
-        // println!("max_count_3 {:?}", max_count_3.or_else(|| Some(&0)));
-
         // if there is a max_pair 
         if let Some(max_pair) = max_pair_opt {
             max_pairs.push(max_pair.clone());
@@ -158,7 +152,7 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
                 while i < tok.len() {
                     if i < tok.len() - 1 && (tok[i].clone(), tok[i+1].clone()) == max_pair {
                         let new_vocab = [&tok[i][..], &tok[i+1][..]].concat();
-                        println!("new_vocab {:?}", String::from_utf8(new_vocab.clone()));
+                        // println!("new_vocab {:?}", String::from_utf8(new_vocab.clone()));
                         new_tok.push(new_vocab);
                         i += 2;
                     } else {
@@ -170,7 +164,7 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
                 // println!("new_tok {:?}", new_tok.clone().iter().map(|x| String::from_utf8(x.clone()).unwrap()).collect::<Vec<String>>().join("") );
 
                 // increment new_tok count by tok_count
-                *tok_to_count.entry(new_tok.clone()).or_insert(0) += tok_count;
+                *tok_to_count.entry(new_tok.clone()).or_default() += tok_count;
                 
                 // decrement tok count by tok_count
                 // if tok_count is zero -> remove tok entry all together.
@@ -192,7 +186,7 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
                         }
                     }
 
-                    *pair_to_count.entry(pair.clone()).or_insert(0) += tok_count;
+                    *pair_to_count.entry(pair.clone()).or_default() += tok_count;
                 }
             }            
             // ---------------- EFFICIENTLY UPDATE ----------------
@@ -219,10 +213,10 @@ fn rusty_pre_tok(chunk:&str, special_tokens:Vec<String>) -> HashMap<Vec<Vec<u8>>
     let re_special_toks: Regex = Regex::new(&pat_special_toks).unwrap();
 
     for regex_match in re_special_toks.split(chunk).flat_map(|subchunk| RE.find_iter(subchunk.unwrap())) {
-        let key: Vec<Vec<u8>>  = regex_match.unwrap().as_str().chars().map(|c| c.to_string().as_bytes().to_vec()).collect();
+        let key: Vec<Vec<u8>> = regex_match.unwrap().as_str().as_bytes().iter().map(|&byte| vec![byte]).collect();
 
         // += 1
-        *tok_to_count.entry(key).or_insert(1) += 1;
+        *tok_to_count.entry(key).or_default() += 1;
         
     }
 
@@ -238,16 +232,10 @@ fn rusty_get_chunk_pre_toks(filepath: &str, start: u64, end: u64, special_tokens
     let mut buffer = vec![0u8; (end - start) as usize];
     let bytes_read = file.read(&mut buffer)?;
     let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
-    println!("------ chunk ------");
-    println!("{}", chunk);
-    println!("------ chunk ------");
     for regex_match in re_special_toks.split(&chunk).flat_map(|subchunk| RE.find_iter(subchunk.unwrap())) {
-        // println!("match {}", regex_match.clone().unwrap().as_str());
-        let key: Vec<Vec<u8>>  = regex_match.unwrap().as_str().chars().map(|c| c.to_string().as_bytes().to_vec()).collect();
-
+        let key: Vec<Vec<u8>> = regex_match.unwrap().as_str().as_bytes().iter().map(|&byte| vec![byte]).collect();
         // += 1
-        *tok_to_count.entry(key).or_insert(1) += 1;
-        
+        *tok_to_count.entry(key).or_default() += 1;
     }
     Ok(tok_to_count)   
 }
@@ -266,7 +254,7 @@ fn rusty_get_pre_toks(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<S
         .into_iter()
         .fold(HashMap::new(), |mut acc, chunk_map| {
             for (key, value) in chunk_map.unwrap() {
-                *acc.entry(key).or_insert(0) += value;
+                *acc.entry(key).or_default() += value;
             }
             acc
         });
