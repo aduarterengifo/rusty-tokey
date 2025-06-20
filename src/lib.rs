@@ -1,7 +1,18 @@
 use pyo3::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Error;
 use std::hash::Hash;
 use std::collections::hash_map::Entry;
+use std::num::ParseIntError;
+use regex::Regex;
+use once_cell::sync::Lazy;
+use std::fs::File;
+use std::io::{self, Read, BufReader};
+
+const PAT: &str = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
+
+
+static RE: Lazy<Regex> = Lazy::new(|| Regex::new(PAT).unwrap());
 
 /// Formats the sum of two numbers as string.
 #[pyfunction]
@@ -9,23 +20,9 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
     Ok((a + b).to_string())
 }
 
-fn increment_and_remove_if_zero<T: std::cmp::Eq + Hash, N: std::ops::AddAssign + std::cmp::PartialEq<usize>>(map: &mut HashMap<T, N>, key: T, amount: N) -> () {
-    match map.entry(key) {
-        Entry::Occupied(mut entry) => {
-            // add
-            *entry.get_mut() += amount;
-            
-            // if the value becomes 0 as a result remove.
-            if *entry.get() == 0 {
-                entry.remove();
-            }
-        }
-        Entry::Vacant(entry) => {
-            if amount != 0 {
-                entry.insert(amount);
-            }
-        }
-    }
+#[pyfunction]
+fn simpl() -> PyResult<String> {
+    Ok("COW".to_string())
 }
 
 fn decrement_or_remove<T: std::cmp::Eq + Hash>(map: &mut HashMap<T, usize>, key: T, amount: usize) -> () {
@@ -84,7 +81,9 @@ fn get_pairs(
 /// we take a map from vector of bytes and a max vocab size.
 /// and we return?
 #[pyfunction]
-fn merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
+fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
+    println!("we are inside rusty_merge");
+    println!("{:?}", tok_to_count);
     let mut max_pairs = vec![(vec![0; 0], vec![0; 0]); max];
     let (mut pair_to_count, mut pair_to_toks) = get_pairs(&tok_to_count);
     // TODO: maintain heap of max-pairs, instead of finding the max_pair on every loop.
@@ -195,14 +194,41 @@ fn merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> PyResult
 
 
     };
-
+    println!("{:?}", max_pairs);
     Ok(max_pairs)
+}
+
+#[pyfunction]
+fn rusty_pre_tok(chunk:&str, special_tokens:Vec<String>) -> HashMap<Vec<Vec<u8>>, usize> {
+    let mut tok_to_count: HashMap<Vec<Vec<u8>>, usize> = HashMap::new();
+    let pat_special_toks = special_tokens.iter().map(|x: &String| regex::escape(x)).collect::<Vec<String>>().join("|");
+    let re_special_toks: Regex = Regex::new(&pat_special_toks).unwrap();
+
+    for regex_match in re_special_toks.split(chunk).flat_map(|subchunk| RE.find_iter(subchunk)) {
+        let key: Vec<Vec<u8>>  = regex_match.as_str().chars().map(|c| c.to_string().as_bytes().to_vec()).collect();
+
+        // += 1
+        *tok_to_count.entry(key).or_insert(1) += 1;
+        
+    }
+
+    tok_to_count
+}
+
+#[pyfunction]
+fn rusty_get_pre_toks(filepath: String) -> Result<(), std::io::Error>{
+    let file = File::open(filepath)?;
+    
+    Ok(())
 }
 
 /// A Python module implemented in Rust.
 #[pymodule]
 fn rusty_tokey(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
-    m.add_function(wrap_pyfunction!(merge, m)?)?;
+    m.add_function(wrap_pyfunction!(rusty_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(rusty_pre_tok, m)?)?;
+    m.add_function(wrap_pyfunction!(rusty_get_pre_toks, m)?)?;
+    m.add_function(wrap_pyfunction!(simpl, m)?)?;
     Ok(())
 }
