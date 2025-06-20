@@ -17,15 +17,19 @@ const PAT: &str = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s
 
 static RE: Lazy<Regex> = Lazy::new(|| Regex::new(PAT).unwrap());
 
-/// Formats the sum of two numbers as string.
-#[pyfunction]
-fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-    Ok((a + b).to_string())
+ #[derive(Eq, PartialEq)]
+ #[derive(PartialOrd)]
+struct PairHeapEntry {
+    count: usize,
+    pair: (Vec<u8>, Vec<u8>),
 }
 
-#[pyfunction]
-fn simpl() -> PyResult<String> {
-    Ok("COW".to_string())
+impl Ord for PairHeapEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Max heap: higher count = higher priority
+        self.count.cmp(&other.count)
+            .then(self.pair.cmp(&other.pair))  // tie-breaking
+    }
 }
 
 fn decrement_or_remove<T: std::cmp::Eq + Hash>(map: &mut HashMap<T, usize>, key: T, amount: usize) -> () {
@@ -50,9 +54,11 @@ fn get_pairs(
 ) -> (
     HashMap<(Vec<u8>, Vec<u8>), usize>,
     HashMap<(Vec<u8>, Vec<u8>), HashSet<Vec<Vec<u8>>>>,
+    BinaryHeap<PairHeapEntry>
 ) {
     let mut pair_to_count: HashMap<(Vec<u8>, Vec<u8>), usize> = HashMap::new();
     let mut pair_to_toks: HashMap<(Vec<u8>, Vec<u8>), HashSet<Vec<Vec<u8>>>> = HashMap::new();
+    let mut heap = BinaryHeap::new();
 
     for (tok, count) in tok_to_count {
         // not big enough for a pair.
@@ -62,14 +68,21 @@ fn get_pairs(
         for i in 0..(tok.len() - 1) {
             let pair = (tok[i].clone(), tok[i+1].clone());
 
-            match pair_to_count.entry(pair.clone()) {
+            let new_count = match pair_to_count.entry(pair.clone()) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     *e.get_mut() += count; // Increment by counter if exists
+                    *e.get()
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(*count); // Insert counter if doesn't exist
+                    *count
                 }
-            }
+            };
+
+            heap.push(PairHeapEntry {
+                count: new_count, 
+                pair: pair.clone(),
+            });
 
             pair_to_toks
                 .entry(pair.clone())
@@ -78,8 +91,9 @@ fn get_pairs(
         }
     }
 
-    (pair_to_count, pair_to_toks)
+    (pair_to_count, pair_to_toks, heap)
 }
+
 
 /// we take a map from vector of bytes and a max vocab size.
 /// and we return?
@@ -88,110 +102,112 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
     println!("we are inside rusty_merge");
     // println!("{:?}", tok_to_count);
     let mut max_pairs = vec![(vec![0; 0], vec![0; 0]); 0];
-    let (mut pair_to_count, mut pair_to_toks) = get_pairs(&tok_to_count);
+    let (mut pair_to_count, mut pair_to_toks, mut heap) = get_pairs(&tok_to_count);
 
     // let max_count_2 =  pair_to_count[&("w".as_bytes().to_vec(),"w".as_bytes().to_vec())];
     // println!("max_count {}", max_count_2);
     // TODO: maintain heap of max-pairs, instead of finding the max_pair on every loop.
 
     while max_pairs.len() < max {
-        let max_pair_opt = pair_to_count.iter()
-        .max_by_key(|(pair, count)| (*count, *pair))
-        .map(|pair| pair.0.clone());
+        // pop from heap.
+        if let Some (heap_entry) = heap.pop() {
+            if pair_to_count.get(&heap_entry.pair) == Some(&heap_entry.count) {
+                let max_pair = heap_entry.pair;
 
-        // if there is a max_pair 
-        if let Some(max_pair) = max_pair_opt {
-            max_pairs.push(max_pair.clone());
-            // ---------------- EFFICIENTLY UPDATE ----------------
-            let max_pair_to_toks = &pair_to_toks[&max_pair];
-            // println!("max_pair_to_toks: {:?}", max_pair_to_toks);
-            // for every tok that contains max_pair
-            for tok in max_pair_to_toks.clone() {
-                match tok_to_count.entry(tok.clone()) {
-                    Entry::Occupied(_) => (),
-                    Entry::Vacant(_) => continue, // Skip if doesn't exist
-                };
+                max_pairs.push(max_pair.clone());
 
-                let tok_count = tok_to_count[&tok.clone()];
+                let max_pair_to_toks = &pair_to_toks[&max_pair];
+                
+                // for every tok that contains max_pair
+                for tok in max_pair_to_toks.clone() {
+                    match tok_to_count.entry(tok.clone()) {
+                        Entry::Occupied(_) => (),
+                        Entry::Vacant(_) => continue, // Skip if doesn't exist
+                    };
 
-                // for every pair in tok
-                for i in 0..tok.len() - 1 {
-                    let pair = (tok[i].clone(), tok[i+1].clone());
-                    
-                    match pair_to_toks.entry(pair.clone()) {
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            let set = e.get_mut();
+                    let tok_count = tok_to_count[&tok.clone()];
 
-                            // remove from pair's toks.
-                            set.remove(&tok);
+                    // for every pair in tok
+                    for i in 0..tok.len() - 1 {
+                        let pair = (tok[i].clone(), tok[i+1].clone());
+                        
+                        match pair_to_toks.entry(pair.clone()) {
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                let set = e.get_mut();
+
+                                // remove from pair's toks.
+                                set.remove(&tok);
+                            }
+                            std::collections::hash_map::Entry::Vacant(_) => {}
                         }
-                        std::collections::hash_map::Entry::Vacant(_) => {}
+
+                        match pair_to_count.entry(pair.clone()) {
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                *e.get_mut() = e.get_mut().saturating_sub(tok_count); // remove tok_count from pair count. 
+                                
+                                if *e.get() > 0 {
+                                    heap.push(PairHeapEntry { count: *e.get(), pair  });
+                                } else {
+                                    e.remove();
+                                }
+                            }
+                            std::collections::hash_map::Entry::Vacant(_) => {}
+                        };
+
+                    }
+                    
+                    // construct new_tok
+                    let mut new_tok: Vec<Vec<u8>>= Vec::new();
+                    
+                    let mut i = 0; 
+
+                    while i < tok.len() {
+                        if i < tok.len() - 1 && (tok[i].clone(), tok[i+1].clone()) == max_pair {
+                            let new_vocab = [&tok[i][..], &tok[i+1][..]].concat();
+                            // println!("new_vocab {:?}", String::from_utf8(new_vocab.clone()));
+                            new_tok.push(new_vocab);
+                            i += 2;
+                        } else {
+                            new_tok.push(tok[i].clone());
+                            i += 1
+                        }
                     }
 
-                    match pair_to_count.entry(pair.clone()) {
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            *e.get_mut() = e.get_mut().saturating_sub(tok_count); // remove tok_count from pair count. 
-                            
-                            // if pair's count is zero.
-                            if *e.get() == 0 {
-                                // remove pair's pair_to_count entry
-                                e.remove();
+                    // println!("new_tok {:?}", new_tok.clone().iter().map(|x| String::from_utf8(x.clone()).unwrap()).collect::<Vec<String>>().join("") );
 
-                                // TODO: also remove the pair's pair_to_toks entry
+                    // increment new_tok count by tok_count
+                    *tok_to_count.entry(new_tok.clone()).or_default() += tok_count;
+                    
+                    // decrement tok count by tok_count
+                    // if tok_count is zero -> remove tok entry all together.
+                    decrement_or_remove(&mut tok_to_count, tok.clone(), tok_count);
+
+                    // for every pair in new_tok
+                    for i in 0..new_tok.clone().len() - 1 {
+                        let pair = (new_tok[i].clone(), new_tok[i+1].clone());
+                        
+                        match pair_to_toks.entry(pair.clone()) {
+                            // old_pair
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                // insert new_tok
+                                e.get_mut().insert(new_tok.clone());
+                            }
+                            // new pair
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert(HashSet::from_iter([new_tok.clone()]));
                             }
                         }
-                        std::collections::hash_map::Entry::Vacant(_) => {}
+
+                        *pair_to_count.entry(pair.clone()).or_default() += tok_count;
+
+                        heap.push(PairHeapEntry {
+                            count: pair_to_count[&pair],
+                            pair: pair.clone(),
+                        });
+
                     }
                 }
-                
-                // construct new_tok
-                let mut new_tok: Vec<Vec<u8>>= Vec::new();
-                
-                let mut i = 0; 
-
-                while i < tok.len() {
-                    if i < tok.len() - 1 && (tok[i].clone(), tok[i+1].clone()) == max_pair {
-                        let new_vocab = [&tok[i][..], &tok[i+1][..]].concat();
-                        // println!("new_vocab {:?}", String::from_utf8(new_vocab.clone()));
-                        new_tok.push(new_vocab);
-                        i += 2;
-                    } else {
-                        new_tok.push(tok[i].clone());
-                        i += 1
-                    }
-                }
-
-                // println!("new_tok {:?}", new_tok.clone().iter().map(|x| String::from_utf8(x.clone()).unwrap()).collect::<Vec<String>>().join("") );
-
-                // increment new_tok count by tok_count
-                *tok_to_count.entry(new_tok.clone()).or_default() += tok_count;
-                
-                // decrement tok count by tok_count
-                // if tok_count is zero -> remove tok entry all together.
-                decrement_or_remove(&mut tok_to_count, tok.clone(), tok_count);
-
-                // for every pair in new_tok
-                for i in 0..new_tok.clone().len() - 1 {
-                    let pair = (new_tok[i].clone(), new_tok[i+1].clone());
-                    
-                    match pair_to_toks.entry(pair.clone()) {
-                        // old_pair
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            // insert new_tok
-                            e.get_mut().insert(new_tok.clone());
-                        }
-                        // new pair
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(HashSet::from_iter([new_tok.clone()]));
-                        }
-                    }
-
-                    *pair_to_count.entry(pair.clone()).or_default() += tok_count;
-                }
-            }            
-            // ---------------- EFFICIENTLY UPDATE ----------------
-        } else {
-            break;
+            }           
         }
     };
     // println!("{:?}", max_pairs);
@@ -264,11 +280,9 @@ fn rusty_get_pre_toks(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<S
 /// A Python module implemented in Rust.
 #[pymodule]
 fn rusty_tokey(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     m.add_function(wrap_pyfunction!(rusty_merge, m)?)?;
     m.add_function(wrap_pyfunction!(rusty_full_merge, m)?)?;
     m.add_function(wrap_pyfunction!(rusty_pre_tok, m)?)?;
     m.add_function(wrap_pyfunction!(rusty_get_pre_toks, m)?)?;
-    m.add_function(wrap_pyfunction!(simpl, m)?)?;
     Ok(())
 }
