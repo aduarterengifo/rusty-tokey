@@ -7,8 +7,9 @@ import cProfile
 import pstats
 from collections import Counter
 import heapq
-from rusty_tokey import rusty_merge
-from rusty_tokey import rusty_pre_tok
+# from rusty_tokey import rusty_merge
+from rusty_tokey import rusty_full_merge
+# from rusty_tokey import rusty_pre_tok
 
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -73,23 +74,23 @@ def pre_tokenize_chunk(input_path: str, start: int, end: int, pattern: re.Patter
             store[res_bytes] += 1
         return store
     
-def rusty_pre_tokenize_chunk(input_path: str, start: int, end: int, special_tokens: list[str]) -> dict[list[]]:
-    with open(input_path, "rb") as f:
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+# def rusty_pre_tokenize_chunk(input_path: str, start: int, end: int, pattern: re.Pattern[str], special_tokens: list[str]) -> dict[list[list[int]],int]:
+#     with open(input_path, "rb") as f:
+#         f.seek(start)
+#         chunk = f.read(end - start).decode("utf-8", errors="ignore")
 
-        return rusty_pre_tok(chunk,special_tokens)
+#         result = rusty_pre_tok(chunk,special_tokens)
 
-        # sub_chunks = pattern.split(chunk)
-        # # run tokenization for each of the sub_chunks.
-        # iterators = [PAT_RE.finditer(sub_chunk) for sub_chunk in sub_chunks]
-        # flattened_iterators = itertools.chain(*iterators)
-        # store = Counter()
-        # for match in flattened_iterators:
-        #     res = match.group()
-        #     res_bytes = tuple(bytes([c]) for c in res.encode("utf-8"))
-        #     store[res_bytes] += 1
-        # return store
+#         sub_chunks = pattern.split(chunk)
+#         # run tokenization for each of the sub_chunks.
+#         iterators = [PAT_RE.finditer(sub_chunk) for sub_chunk in sub_chunks]
+#         flattened_iterators = itertools.chain(*iterators)
+#         store = Counter()
+#         for match in flattened_iterators:
+#             res = match.group()
+#             res_bytes = tuple(bytes([c]) for c in res.encode("utf-8"))
+#             store[res_bytes] += 1
+#         return store
 
 
 def get_all_simple_pairs(
@@ -192,19 +193,22 @@ def train_bpe(
     with open(input_path, "rb") as f:
         # find the chunk boundaries
         boundaries = find_chunk_boundaries(f, 16, "<|endoftext|>".encode("utf-8"))
-        num_workers = min(mp.cpu_count(), len(boundaries) - 1)
-        with mp.Pool(processes=num_workers) as pool:
-            results = pool.starmap(
-                rusty_pre_tokenize_chunk,
-                [(input_path, start, end, special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])],
-            )
+        # num_workers = min(mp.cpu_count(), len(boundaries) - 1)
+        # with mp.Pool(processes=num_workers) as pool:
+        #     results = pool.starmap(
+        #         rusty_pre_tokenize_chunk,
+        #         [(input_path, start, end, pattern, special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])],
+        #     )
         # results = [pre_tokenize_chunk(chunk) for chunk in chunks]
-        combined = Counter()
+        # combined = Counter()
 
-        for d in results:
-            combined.update(d)
+        # for d in results:
+        #     combined.update(d)
 
-        max_pairs = rusty_merge(combined, stopping_condition)
+        # max_pairs = rusty_merge(combined, stopping_condition)
+
+        max_pairs = rusty_full_merge(input_path, boundaries, special_tokens, vocab_size)
+        # print('max_pairs', max_pairs)
         vocab: dict[int, bytes] = {}
         # single-bytes
         for i in range(0, 256):

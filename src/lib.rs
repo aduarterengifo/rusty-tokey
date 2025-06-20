@@ -1,13 +1,12 @@
 use pyo3::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Error;
 use std::hash::Hash;
 use std::collections::hash_map::Entry;
-use std::num::ParseIntError;
-use regex::Regex;
+use fancy_regex::Regex;
 use once_cell::sync::Lazy;
 use std::fs::File;
-use std::io::{self, Read, BufReader};
+use std::io::{self, Read, Seek, SeekFrom};
+use rayon::prelude::*;
 
 const PAT: &str = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
 
@@ -83,7 +82,7 @@ fn get_pairs(
 #[pyfunction]
 fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
     println!("we are inside rusty_merge");
-    println!("{:?}", tok_to_count);
+    // println!("{:?}", tok_to_count);
     let mut max_pairs = vec![(vec![0; 0], vec![0; 0]); max];
     let (mut pair_to_count, mut pair_to_toks) = get_pairs(&tok_to_count);
     // TODO: maintain heap of max-pairs, instead of finding the max_pair on every loop.
@@ -194,9 +193,17 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<Vec<u8>>, usize>, max: usize) -> Py
 
 
     };
-    println!("{:?}", max_pairs);
+    // println!("{:?}", max_pairs);
     Ok(max_pairs)
 }
+
+#[pyfunction]
+fn rusty_full_merge(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<String>, max: usize) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
+    let tok_to_count = rusty_get_pre_toks(filepath, boundaries, special_tokens);
+    // println!("tok_to_count {:?}", tok_to_count);
+    return rusty_merge(tok_to_count.unwrap(), max)
+}
+
 
 #[pyfunction]
 fn rusty_pre_tok(chunk:&str, special_tokens:Vec<String>) -> HashMap<Vec<Vec<u8>>, usize> {
@@ -204,8 +211,8 @@ fn rusty_pre_tok(chunk:&str, special_tokens:Vec<String>) -> HashMap<Vec<Vec<u8>>
     let pat_special_toks = special_tokens.iter().map(|x: &String| regex::escape(x)).collect::<Vec<String>>().join("|");
     let re_special_toks: Regex = Regex::new(&pat_special_toks).unwrap();
 
-    for regex_match in re_special_toks.split(chunk).flat_map(|subchunk| RE.find_iter(subchunk)) {
-        let key: Vec<Vec<u8>>  = regex_match.as_str().chars().map(|c| c.to_string().as_bytes().to_vec()).collect();
+    for regex_match in re_special_toks.split(chunk).flat_map(|subchunk| RE.find_iter(subchunk.unwrap())) {
+        let key: Vec<Vec<u8>>  = regex_match.unwrap().as_str().chars().map(|c| c.to_string().as_bytes().to_vec()).collect();
 
         // += 1
         *tok_to_count.entry(key).or_insert(1) += 1;
@@ -215,11 +222,48 @@ fn rusty_pre_tok(chunk:&str, special_tokens:Vec<String>) -> HashMap<Vec<Vec<u8>>
     tok_to_count
 }
 
+fn rusty_get_chunk_pre_toks(filepath: &str, start: u64, end: u64, special_tokens:Vec<String>) ->  io::Result<HashMap<Vec<Vec<u8>>, usize>> {
+    let mut tok_to_count: HashMap<Vec<Vec<u8>>, usize> = HashMap::new();
+    let pat_special_toks = special_tokens.iter().map(|x: &String| regex::escape(x)).collect::<Vec<String>>().join("|");
+    let re_special_toks: Regex = Regex::new(&pat_special_toks).unwrap();
+    let mut file = File::open(filepath)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut buffer = vec![0u8; (end - start) as usize];
+    let bytes_read = file.read(&mut buffer)?;
+    let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
+    println!("------ chunk ------");
+    println!("{}", chunk);
+    println!("------ chunk ------");
+    for regex_match in re_special_toks.split(&chunk).flat_map(|subchunk| RE.find_iter(subchunk.unwrap())) {
+        println!("match {}", regex_match.clone().unwrap().as_str());
+        let key: Vec<Vec<u8>>  = regex_match.unwrap().as_str().chars().map(|c| c.to_string().as_bytes().to_vec()).collect();
+
+        // += 1
+        *tok_to_count.entry(key).or_insert(1) += 1;
+        
+    }
+    Ok(tok_to_count)   
+}
+
 #[pyfunction]
-fn rusty_get_pre_toks(filepath: String) -> Result<(), std::io::Error>{
-    let file = File::open(filepath)?;
-    
-    Ok(())
+fn rusty_get_pre_toks(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<String>) -> io::Result<HashMap<Vec<Vec<u8>>, usize>> {
+
+    // let pat_special_toks = special_tokens.iter().map(|x: &String| regex::escape(x)).collect::<Vec<String>>().join("|");
+    let r: Vec<(u64, u64)> = boundaries.windows(2).map(|x| (x[0],x[1])).collect();
+    let map = r
+        .par_iter()
+        .map(|(start,end)| {
+            rusty_get_chunk_pre_toks(filepath,*start,*end, special_tokens.clone())
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .fold(HashMap::new(), |mut acc, chunk_map| {
+            for (key, value) in chunk_map.unwrap() {
+                *acc.entry(key).or_insert(0) += value;
+            }
+            acc
+        });
+    Ok(map)
 }
 
 /// A Python module implemented in Rust.
@@ -227,6 +271,7 @@ fn rusty_get_pre_toks(filepath: String) -> Result<(), std::io::Error>{
 fn rusty_tokey(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     m.add_function(wrap_pyfunction!(rusty_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(rusty_full_merge, m)?)?;
     m.add_function(wrap_pyfunction!(rusty_pre_tok, m)?)?;
     m.add_function(wrap_pyfunction!(rusty_get_pre_toks, m)?)?;
     m.add_function(wrap_pyfunction!(simpl, m)?)?;
