@@ -70,3 +70,6 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+# data 
+python/rusty_tokey/data/*.txt

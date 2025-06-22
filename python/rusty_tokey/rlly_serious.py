@@ -10,12 +10,16 @@ PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s
 PAT_RE = re.compile(PAT)
 
 
-def find_chunk_boundaries(file: BinaryIO, desired_num_chunks: int, split_special_token: bytes) -> list[int]:
+def find_chunk_boundaries(
+    file: BinaryIO, desired_num_chunks: int, split_special_token: bytes
+) -> list[int]:
     """
     Chunk the file into parts that can be counted independently.
     May return fewer chunks if the boundaries end up overlapping.
     """
-    assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
+    assert isinstance(split_special_token, bytes), (
+        "Must represent special token as a bytestring"
+    )
 
     # Get total file size in bytes
     file.seek(0, os.SEEK_END)
@@ -52,6 +56,7 @@ def find_chunk_boundaries(file: BinaryIO, desired_num_chunks: int, split_special
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
+
 def rusty_train_bpe(
     input_path: str, vocab_size: int, special_tokens: list[str]
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
@@ -62,7 +67,9 @@ def rusty_train_bpe(
         # find the chunk boundaries
         boundaries = find_chunk_boundaries(f, 16, "<|endoftext|>".encode("utf-8"))
 
-        max_pairs = rusty_full_merge(input_path, boundaries, special_tokens, stopping_condition)
+        max_pairs = rusty_full_merge(
+            input_path, boundaries, special_tokens, stopping_condition
+        )
         # print('max_pairs', max_pairs)
         vocab: dict[int, bytes] = {}
         # single-bytes
@@ -81,9 +88,28 @@ def rusty_train_bpe(
 if __name__ == "__main__":
     profiler = cProfile.Profile()
     profiler.enable()
-    (vocab, max_pairs) = rusty_train_bpe("./python/rusty_tokey/data/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
-    print("max_pairs", max_pairs)
-    print("vocab", vocab)
+    # --------- tinystories sample  ---------
+    # (vocab, max_pairs) = rusty_train_bpe("./python/rusty_tokey/data/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
+    # print("max_pairs", max_pairs)
+    # print("vocab", vocab)
+    # --------- tinystories sample ---------
+
+    # --------- tinystories ---------
+    # (vocab, max_pairs) = rusty_train_bpe(
+    #     "./python/rusty_tokey/data/TinyStoriesV2-GPT4-train.txt",
+    #     10_000,
+    #     ["<|endoftext|>"],
+    # )
+    # print({k: v.decode("utf-8", errors="replace") for k, v in vocab.items()})
+    # --------- tinystories ---------
+    # --------- tinystories ---------
+    (vocab, max_pairs) = rusty_train_bpe(
+        "./python/rusty_tokey/data/owt_train.txt",
+        32_000,
+        ["<|endoftext|>"],
+    )
+    print({k: v.decode("utf-8", errors="replace") for k, v in vocab.items()})
+    # --------- tinystories ---------
     profiler.disable()
     stats = pstats.Stats(profiler).sort_stats("cumtime")
     stats.print_stats(20)  # Show top 20 slowest functions
