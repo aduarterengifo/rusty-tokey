@@ -1,0 +1,26 @@
+0|1|2|3|4|5
+b|r|o|k|e|n
+
+join ok.
+
+prev 
+- (r,o) (1,2)
+next
+- (k,e) (3,4) 
+
+merge 
+
+0|1|2 |3|4|5
+b|r|ok|0|e|n
+
+prev 
+- (r,ok) (1,2)
+next
+- (ok,e) (2,4) (jump).
+
+later......
+
+I want to merge (e,n) (4,5).
+if indexes are not respected 4 will point to n instead of e.
+
+
