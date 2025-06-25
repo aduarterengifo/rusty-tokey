@@ -15,6 +15,8 @@ Byte Pair Encoding tokenizer. Rust core with Python bindings.
 
 ```bash
 maturin develop
+
+uv run maturin develop
 ```
 
 ## Run

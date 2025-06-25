@@ -89,9 +89,9 @@ if __name__ == "__main__":
     profiler = cProfile.Profile()
     profiler.enable()
     # --------- tinystories sample  ---------
-    # (vocab, max_pairs) = rusty_train_bpe("./python/rusty_tokey/data/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
-    # print("max_pairs", max_pairs)
-    # print("vocab", vocab)
+    (vocab, max_pairs) = rusty_train_bpe("./python/rusty_tokey/data/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
+    print("max_pairs", max_pairs)
+    print("vocab", vocab)
     # --------- tinystories sample ---------
 
     # --------- tinystories ---------
@@ -102,14 +102,14 @@ if __name__ == "__main__":
     # )
     # print({k: v.decode("utf-8", errors="replace") for k, v in vocab.items()})
     # --------- tinystories ---------
-    # --------- tinystories ---------
-    (vocab, max_pairs) = rusty_train_bpe(
-        "./python/rusty_tokey/data/owt_train.txt",
-        32_000,
-        ["<|endoftext|>"],
-    )
-    print({k: v.decode("utf-8", errors="replace") for k, v in vocab.items()})
-    # --------- tinystories ---------
+    # --------- owt ---------
+    # (vocab, max_pairs) = rusty_train_bpe(
+    #     "./python/rusty_tokey/data/owt_train.txt",
+    #     32_000,
+    #     ["<|endoftext|>"],
+    # )
+    # print({k: v.decode("utf-8", errors="replace") for k, v in vocab.items()})
+    # --------- owt ---------
     profiler.disable()
     stats = pstats.Stats(profiler).sort_stats("cumtime")
     stats.print_stats(20)  # Show top 20 slowest functions
