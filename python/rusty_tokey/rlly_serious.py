@@ -89,18 +89,18 @@ if __name__ == "__main__":
     profiler = cProfile.Profile()
     profiler.enable()
     # --------- tinystories sample  ---------
-    (vocab, max_pairs) = rusty_train_bpe("./python/rusty_tokey/data/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
-    print("max_pairs", max_pairs)
-    print("vocab", vocab)
+    # (vocab, max_pairs) = rusty_train_bpe("./python/rusty_tokey/data/tinystories_sample_5M.txt", 400, ["<|endoftext|>"])
+    # print("max_pairs", max_pairs)
+    # print("vocab", vocab)
     # --------- tinystories sample ---------
 
     # --------- tinystories ---------
-    # (vocab, max_pairs) = rusty_train_bpe(
-    #     "./python/rusty_tokey/data/TinyStoriesV2-GPT4-train.txt",
-    #     10_000,
-    #     ["<|endoftext|>"],
-    # )
-    # print({k: v.decode("utf-8", errors="replace") for k, v in vocab.items()})
+    (vocab, max_pairs) = rusty_train_bpe(
+        "./python/rusty_tokey/data/TinyStoriesV2-GPT4-train.txt",
+        10_000,
+        ["<|endoftext|>"],
+    )
+    print({k: v.decode("utf-8", errors="replace") for k, v in vocab.items()})
     # --------- tinystories ---------
     # --------- owt ---------
     # (vocab, max_pairs) = rusty_train_bpe(
