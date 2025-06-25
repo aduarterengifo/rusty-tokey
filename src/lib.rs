@@ -139,13 +139,13 @@ fn get_pairs(
     interner: &mut TokenInterner,
 ) -> (
     HashMap<(TokenId, TokenId), usize>,
-    HashMap<(TokenId, TokenId), HashSet<Vec<TokenId>>>,
+    HashMap<(TokenId, TokenId), HashMap<Vec<TokenId>, HashSet<usize>>>,
     BinaryHeap<PairHeapEntry>,
 ) {
     let estimated_pairs = tok_to_count.len() * 2;
     let mut pair_to_count: HashMap<(TokenId, TokenId), usize> =
         HashMap::with_capacity(estimated_pairs);
-    let mut pair_to_toks: HashMap<(TokenId, TokenId), HashSet<Vec<TokenId>>> =
+    let mut pair_to_toks: HashMap<(TokenId, TokenId), HashMap<Vec<TokenId>, HashSet<usize>>> =
         HashMap::with_capacity(estimated_pairs);
     let mut heap = BinaryHeap::new();
 
@@ -173,8 +173,10 @@ fn get_pairs(
 
             pair_to_toks
                 .entry(pair)
-                .or_insert(HashSet::new())
-                .insert(tok.clone());
+                .or_insert_with(HashMap::new)
+                .entry(tok.clone())
+                .or_insert_with(HashSet::new)
+                .insert(i);
         }
     }
 
@@ -287,7 +289,7 @@ fn rusty_merge(
                 ));
 
                 let tokens_to_process: Vec<Vec<TokenId>> =
-                    pair_to_toks[&max_pair].iter().cloned().collect();
+                    pair_to_toks[&max_pair].keys().cloned().collect();
                 // for every tok that contains max_pair
                 for tok in &tokens_to_process {
                     match tok_to_count.entry(tok.to_vec()) {
@@ -307,10 +309,10 @@ fn rusty_merge(
 
                         match pair_to_toks.entry(pair) {
                             std::collections::hash_map::Entry::Occupied(mut e) => {
-                                let set = e.get_mut();
+                                let map = e.get_mut();
 
                                 // remove from pair's toks.
-                                set.remove(tok);
+                                map.remove(tok);
                             }
                             std::collections::hash_map::Entry::Vacant(_) => {}
                         }
@@ -370,8 +372,10 @@ fn rusty_merge(
 
                         pair_to_toks
                             .entry(pair)
+                            .or_insert_with(HashMap::new)
+                            .entry(new_tok.clone())
                             .or_insert_with(HashSet::new)
-                            .insert(new_tok.clone());
+                            .insert(i);
 
                         *pair_to_count.entry(pair).or_default() += tok_count;
 
