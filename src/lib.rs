@@ -14,64 +14,6 @@ pub mod token_interner;
 
 const PAT: &str = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
 
-// TODO: define a linked array.
-//   - so you store everything.
-// right now for every chunk,
-
-// [  0,   1,   2,   3,   4]
-// ['a', 'b', 'c', 'd', 'e']
-// suppose max-pair = ('b', 'c') -> suppose I keep for each pair a map of toks to sets of indexes.
-// rn the status quo is pair to a set of toks, so the overhead of that is he have to iterate over all of the token
-
-// so suppose I store the index, 1 in this case, what then?
-// well I update the array and it is now, well thats fine so far.
-// [  0,   1,   2,    3]
-// ['a', 'bc', 'd', 'e']
-// but now suppose the next pair is ('d','e') well its index is 3.
-// but because of the deletion that is no longer accurate. so this is immediatly not good.
-// solution: insert nones,at array locations, so indexes are always static AND valid,but then next values become unstable,
-// i can either have none chasing logic, or also have a doubly linked list and simply call next/prev on that
-// the cleanest is with the doubly linked list, the alg you do is just referencing left/right on the list-linked
-
-// ok specifically:
-
-// why can't I just store a reference to the next token in the normal array?
-// I have to a
-
-// [  0,   1,   2,    3]
-// ['a', 'bc', 'd', 'e']
-// in the before replacement pass, i want to get back ('a','b') and ('c','d') such that I can decrement their count. 
-// so, this means what?
-// i have just an index. 
-// [  0,   1,   2,   3,   4]
-// ['a', 'b', 'c', 'd', 'e']
-// so in particular we have 1. I want to be able to get 
-
-// fresh 
-// [  0,   1,   2,   3,   4]
-// ['a', 'b', 'c', 'd', 'e']
-// after the first replacement 
-// [  0,    1,   2,   3,   4]
-// ['a', 'bc',  (), 'd', 'e']
-// lets suppose for maximum awkwardness max-pair = ('bc','d'). 
-// I have index 1.
-// first I want to get the left pair. indexes work with no work. 
-// now I want to get the right pair. indexes don't work. I would expect it would be (2,3)
-// but 2 is null.
-// if I also had this data structure 
-// [a] -> [bc] -> [d] -> [e]
-// from 1 i get the node [bc] in the linked list, so I can say give me the *next* node in the list.
-// and therefore the pair (bc,d).
-// similarly from [bc] I can go to [a].
-// and get (a,bc) and decrement. 
-// decrement down, now. 
-// merge. 
-// [  0,    1,   2,   3,   4]
-// ['a', 'bcd',  (), (), 'e']
-// [a] -> [bcd] -> [e]
-// now I need new left and right (as long as the linked-list is fine) this is the same op as before.
-
-
 struct TokenInterner {
     tokens: Vec<Vec<u8>>,
     token_to_id: HashMap<Vec<u8>, u32>,
