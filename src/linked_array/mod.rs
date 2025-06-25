@@ -9,7 +9,7 @@ struct LinkedArrayNode<T> {
 }
 
 
-struct LinkedArray<T> {
+pub struct LinkedArray<T> {
     vec: Vec<Option<LinkedArrayNode<T>>>,
     interner: TokenInterner
 }
