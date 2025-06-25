@@ -1,0 +1,2 @@
+- [ ] keep tokens in a doubly linked list, and do more bookeeping to narrow the search space for 
+      updating token counts.

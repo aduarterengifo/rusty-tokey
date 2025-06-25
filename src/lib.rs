@@ -1,19 +1,80 @@
-use pyo3::prelude::*;
-use std::collections::{HashMap, HashSet, BinaryHeap};
-use std::cmp::Ordering;
-use std::hash::Hash;
-use std::collections::hash_map::Entry;
 use fancy_regex::Regex;
 use once_cell::sync::Lazy;
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use pyo3::prelude::*;
 use rayon::prelude::*;
+use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::fs::File;
+use std::hash::Hash;
+use std::io::{self, Read, Seek, SeekFrom};
+
+pub mod linked_array;
+pub mod token_interner;
 
 const PAT: &str = r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
 
+// TODO: define a linked array.
+//   - so you store everything.
+// right now for every chunk,
+
+// [  0,   1,   2,   3,   4]
+// ['a', 'b', 'c', 'd', 'e']
+// suppose max-pair = ('b', 'c') -> suppose I keep for each pair a map of toks to sets of indexes.
+// rn the status quo is pair to a set of toks, so the overhead of that is he have to iterate over all of the token
+
+// so suppose I store the index, 1 in this case, what then?
+// well I update the array and it is now, well thats fine so far.
+// [  0,   1,   2,    3]
+// ['a', 'bc', 'd', 'e']
+// but now suppose the next pair is ('d','e') well its index is 3.
+// but because of the deletion that is no longer accurate. so this is immediatly not good.
+// solution: insert nones,at array locations, so indexes are always static AND valid,but then next values become unstable,
+// i can either have none chasing logic, or also have a doubly linked list and simply call next/prev on that
+// the cleanest is with the doubly linked list, the alg you do is just referencing left/right on the list-linked
+
+// ok specifically:
+
+// why can't I just store a reference to the next token in the normal array?
+// I have to a
+
+// [  0,   1,   2,    3]
+// ['a', 'bc', 'd', 'e']
+// in the before replacement pass, i want to get back ('a','b') and ('c','d') such that I can decrement their count. 
+// so, this means what?
+// i have just an index. 
+// [  0,   1,   2,   3,   4]
+// ['a', 'b', 'c', 'd', 'e']
+// so in particular we have 1. I want to be able to get 
+
+// fresh 
+// [  0,   1,   2,   3,   4]
+// ['a', 'b', 'c', 'd', 'e']
+// after the first replacement 
+// [  0,    1,   2,   3,   4]
+// ['a', 'bc',  (), 'd', 'e']
+// lets suppose for maximum awkwardness max-pair = ('bc','d'). 
+// I have index 1.
+// first I want to get the left pair. indexes work with no work. 
+// now I want to get the right pair. indexes don't work. I would expect it would be (2,3)
+// but 2 is null.
+// if I also had this data structure 
+// [a] -> [bc] -> [d] -> [e]
+// from 1 i get the node [bc] in the linked list, so I can say give me the *next* node in the list.
+// and therefore the pair (bc,d).
+// similarly from [bc] I can go to [a].
+// and get (a,bc) and decrement. 
+// decrement down, now. 
+// merge. 
+// [  0,    1,   2,   3,   4]
+// ['a', 'bcd',  (), (), 'e']
+// [a] -> [bcd] -> [e]
+// now I need new left and right (as long as the linked-list is fine) this is the same op as before.
+
+
 struct TokenInterner {
     tokens: Vec<Vec<u8>>,
-    token_to_id: HashMap<Vec<u8>, u32>
+    token_to_id: HashMap<Vec<u8>, u32>,
 }
 
 type TokenId = u32;
@@ -23,22 +84,21 @@ impl TokenInterner {
         if let Some(&id) = self.token_to_id.get(&token) {
             id
         } else {
-            let id = self.tokens.len() as TokenId; 
+            let id = self.tokens.len() as TokenId;
             self.token_to_id.insert(token.clone(), id);
             self.tokens.push(token);
             id
         }
     }
 
-    fn get_bytes(&self, id:TokenId) -> &[u8] {
+    fn get_bytes(&self, id: TokenId) -> &[u8] {
         &self.tokens[id as usize]
     }
- }
+}
 
 static RE: Lazy<Regex> = Lazy::new(|| Regex::new(PAT).unwrap());
 
- #[derive(Eq, PartialEq)]
- #[derive(PartialOrd)]
+#[derive(Eq, PartialEq, PartialOrd)]
 struct PairHeapEntry {
     count: usize,
     pair: (Vec<u8>, Vec<u8>),
@@ -47,17 +107,22 @@ struct PairHeapEntry {
 impl Ord for PairHeapEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         // Max heap: higher count = higher priority
-        self.count.cmp(&other.count)
-            .then(self.pair.cmp(&other.pair))  // tie-breaking
+        self.count
+            .cmp(&other.count)
+            .then(self.pair.cmp(&other.pair)) // tie-breaking
     }
 }
 
-fn decrement_or_remove<T: std::cmp::Eq + Hash>(map: &mut HashMap<T, usize>, key: T, amount: usize) -> () {
+fn decrement_or_remove<T: std::cmp::Eq + Hash>(
+    map: &mut HashMap<T, usize>,
+    key: T,
+    amount: usize,
+) -> () {
     match map.entry(key) {
         Entry::Occupied(mut entry) => {
             // add
             *entry.get_mut() = entry.get_mut().saturating_sub(amount);
-            
+
             // if the value becomes 0 as a result remove.
             if *entry.get() == 0 {
                 entry.remove();
@@ -67,19 +132,21 @@ fn decrement_or_remove<T: std::cmp::Eq + Hash>(map: &mut HashMap<T, usize>, key:
     }
 }
 
-// borrows: 
+// borrows:
 //   tok_to_count: hashmap
 fn get_pairs(
     tok_to_count: &HashMap<Vec<TokenId>, usize>,
-    interner: &mut TokenInterner
+    interner: &mut TokenInterner,
 ) -> (
     HashMap<(TokenId, TokenId), usize>,
     HashMap<(TokenId, TokenId), HashSet<Vec<TokenId>>>,
-    BinaryHeap<PairHeapEntry>
+    BinaryHeap<PairHeapEntry>,
 ) {
     let estimated_pairs = tok_to_count.len() * 2;
-    let mut pair_to_count: HashMap<(TokenId, TokenId), usize> = HashMap::with_capacity(estimated_pairs);
-    let mut pair_to_toks: HashMap<(TokenId, TokenId), HashSet<Vec<TokenId>>> = HashMap::with_capacity(estimated_pairs);
+    let mut pair_to_count: HashMap<(TokenId, TokenId), usize> =
+        HashMap::with_capacity(estimated_pairs);
+    let mut pair_to_toks: HashMap<(TokenId, TokenId), HashSet<Vec<TokenId>>> =
+        HashMap::with_capacity(estimated_pairs);
     let mut heap = BinaryHeap::new();
 
     for (tok, count) in tok_to_count {
@@ -88,7 +155,7 @@ fn get_pairs(
             continue;
         }
         for i in 0..(tok.len() - 1) {
-            let pair = (tok[i].clone(), tok[i+1].clone());
+            let pair = (tok[i].clone(), tok[i + 1].clone());
 
             let new_count = {
                 let entry = pair_to_count.entry(pair.clone()).or_insert(0);
@@ -97,8 +164,11 @@ fn get_pairs(
             };
 
             heap.push(PairHeapEntry {
-                count: new_count, 
-                pair: (interner.get_bytes(pair.0).to_vec(), interner.get_bytes(pair.1).to_vec()),
+                count: new_count,
+                pair: (
+                    interner.get_bytes(pair.0).to_vec(),
+                    interner.get_bytes(pair.1).to_vec(),
+                ),
             });
 
             pair_to_toks
@@ -111,45 +181,64 @@ fn get_pairs(
     (pair_to_count, pair_to_toks, heap)
 }
 
-fn rusty_get_chunk_pre_toks(filepath: &str, start: u64, end: u64, special_tokens:Vec<String>) ->  io::Result<HashMap<Vec<u8>, usize>> {
+fn rusty_get_chunk_pre_toks(
+    filepath: &str,
+    start: u64,
+    end: u64,
+    special_tokens: Vec<String>,
+) -> io::Result<HashMap<Vec<u8>, usize>> {
     let mut tok_to_count: HashMap<Vec<u8>, usize> = HashMap::new();
-    let pat_special_toks = special_tokens.iter().map(|x: &String| regex::escape(x)).collect::<Vec<String>>().join("|");
+    let pat_special_toks = special_tokens
+        .iter()
+        .map(|x: &String| regex::escape(x))
+        .collect::<Vec<String>>()
+        .join("|");
     let re_special_toks: Regex = Regex::new(&pat_special_toks).unwrap();
     let mut file = File::open(filepath)?;
     file.seek(SeekFrom::Start(start))?;
     let mut buffer = vec![0u8; (end - start) as usize];
     let bytes_read = file.read(&mut buffer)?;
     let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
-    for regex_match in re_special_toks.split(&chunk).flat_map(|subchunk| RE.find_iter(subchunk.unwrap())) {
+    for regex_match in re_special_toks
+        .split(&chunk)
+        .flat_map(|subchunk| RE.find_iter(subchunk.unwrap()))
+    {
         let key: Vec<u8> = regex_match.unwrap().as_str().as_bytes().to_vec();
         // += 1
         *tok_to_count.entry(key).or_default() += 1;
     }
-    Ok(tok_to_count)   
+    Ok(tok_to_count)
 }
 
-fn rusty_get_pre_toks(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<String>) -> io::Result<(HashMap<Vec<TokenId>, usize>, TokenInterner)> {
+fn rusty_get_pre_toks(
+    filepath: &str,
+    boundaries: Vec<u64>,
+    special_tokens: Vec<String>,
+) -> io::Result<(HashMap<Vec<TokenId>, usize>, TokenInterner)> {
     let token_to_id = HashMap::new();
     let tokens = Vec::new();
-    let mut interner = TokenInterner {tokens, token_to_id};
+    let mut interner = TokenInterner {
+        tokens,
+        token_to_id,
+    };
     // let pat_special_toks = special_tokens.iter().map(|x: &String| regex::escape(x)).collect::<Vec<String>>().join("|");
-    let r: Vec<(u64, u64)> = boundaries.windows(2).map(|x| (x[0],x[1])).collect();
+    let r: Vec<(u64, u64)> = boundaries.windows(2).map(|x| (x[0], x[1])).collect();
 
     let intermediate = r
         .par_iter()
-        .map(|(start,end)| {
-            rusty_get_chunk_pre_toks(filepath,*start,*end, special_tokens.clone()).unwrap()
+        .map(|(start, end)| {
+            rusty_get_chunk_pre_toks(filepath, *start, *end, special_tokens.clone()).unwrap()
         })
         .collect::<Vec<_>>();
 
-    let mut toks :HashSet<Vec<u8>> = HashSet::new(); 
+    let mut toks: HashSet<Vec<u8>> = HashSet::new();
 
     for chunkmap in &intermediate {
         for raw in chunkmap.keys() {
             toks.insert(raw.clone());
-             for byte in raw {
-                  toks.insert(vec![*byte]);
-              }
+            for byte in raw {
+                toks.insert(vec![*byte]);
+            }
         }
     }
 
@@ -165,9 +254,9 @@ fn rusty_get_pre_toks(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<S
     for chunk_map in intermediate {
         for (raw, count) in chunk_map {
             let token_ids: Vec<TokenId> = raw
-            .chunks(1)
-            .map(|byte| interner.intern(byte.to_vec()))
-            .collect();
+                .chunks(1)
+                .map(|byte| interner.intern(byte.to_vec()))
+                .collect();
 
             *result.entry(token_ids).or_default() += count;
         }
@@ -176,19 +265,29 @@ fn rusty_get_pre_toks(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<S
     Ok((result, interner))
 }
 
-fn rusty_merge(mut tok_to_count: HashMap<Vec<TokenId>, usize>, max: usize, interner: &mut TokenInterner) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
+fn rusty_merge(
+    mut tok_to_count: HashMap<Vec<TokenId>, usize>,
+    max: usize,
+    interner: &mut TokenInterner,
+) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut max_pairs = vec![(vec![0; 0], vec![0; 0]); 0];
     let (mut pair_to_count, mut pair_to_toks, mut heap) = get_pairs(&tok_to_count, interner);
 
     while max_pairs.len() < max {
         // pop from heap.
-        if let Some (heap_entry) = heap.pop() {
-            let max_pair = (interner.intern(heap_entry.pair.0), interner.intern(heap_entry.pair.1));
+        if let Some(heap_entry) = heap.pop() {
+            let max_pair = (
+                interner.intern(heap_entry.pair.0),
+                interner.intern(heap_entry.pair.1),
+            );
             if pair_to_count.get(&max_pair) == Some(&heap_entry.count) {
+                max_pairs.push((
+                    interner.get_bytes(max_pair.0).to_vec(),
+                    interner.get_bytes(max_pair.1).to_vec(),
+                ));
 
-                max_pairs.push((interner.get_bytes(max_pair.0).to_vec(),interner.get_bytes(max_pair.1).to_vec()));
-                
-                 let tokens_to_process: Vec<Vec<TokenId>> = pair_to_toks[&max_pair].iter().cloned().collect();
+                let tokens_to_process: Vec<Vec<TokenId>> =
+                    pair_to_toks[&max_pair].iter().cloned().collect();
                 // for every tok that contains max_pair
                 for tok in &tokens_to_process {
                     match tok_to_count.entry(tok.to_vec()) {
@@ -204,8 +303,8 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<TokenId>, usize>, max: usize, inter
 
                     // for every pair in tok
                     for i in 0..tok.len() - 1 {
-                        let pair = (tok[i], tok[i+1]);
-                        
+                        let pair = (tok[i], tok[i + 1]);
+
                         match pair_to_toks.entry(pair) {
                             std::collections::hash_map::Entry::Occupied(mut e) => {
                                 let set = e.get_mut();
@@ -218,29 +317,33 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<TokenId>, usize>, max: usize, inter
 
                         match pair_to_count.entry(pair) {
                             std::collections::hash_map::Entry::Occupied(mut e) => {
-                                *e.get_mut() = e.get_mut().saturating_sub(tok_count); // remove tok_count from pair count. 
-                                
+                                *e.get_mut() = e.get_mut().saturating_sub(tok_count); // remove tok_count from pair count.
+
                                 if *e.get() > 0 {
-                                    heap.push(PairHeapEntry { count: *e.get(), pair:(interner.get_bytes(pair.0).to_vec(), interner.get_bytes(pair.1).to_vec())  });
+                                    heap.push(PairHeapEntry {
+                                        count: *e.get(),
+                                        pair: (
+                                            interner.get_bytes(pair.0).to_vec(),
+                                            interner.get_bytes(pair.1).to_vec(),
+                                        ),
+                                    });
                                 } else {
                                     e.remove();
                                 }
                             }
                             std::collections::hash_map::Entry::Vacant(_) => {}
                         };
-
                     }
-                    
+
                     // construct new_tok
-                    let mut new_tok: Vec<TokenId>= Vec::new();
-                    
-                    let mut i = 0; 
+                    let mut new_tok: Vec<TokenId> = Vec::new();
+
+                    let mut i = 0;
 
                     while i < tok.len() {
-                        if i < tok.len() - 1 && (tok[i], tok[i+1]) == max_pair {
-        
+                        if i < tok.len() - 1 && (tok[i], tok[i + 1]) == max_pair {
                             let bytes1 = interner.get_bytes(tok[i]);
-                            let bytes2 = interner.get_bytes(tok[i+1]);
+                            let bytes2 = interner.get_bytes(tok[i + 1]);
 
                             let merged_bytes = [bytes1, bytes2].concat();
 
@@ -256,40 +359,46 @@ fn rusty_merge(mut tok_to_count: HashMap<Vec<TokenId>, usize>, max: usize, inter
 
                     // increment new_tok count by tok_count
                     *tok_to_count.entry(new_tok.clone()).or_default() += tok_count;
-                    
+
                     // decrement tok count by tok_count
                     // if tok_count is zero -> remove tok entry all together.
                     decrement_or_remove(&mut tok_to_count, tok.to_vec(), tok_count);
 
                     // for every pair in new_tok
                     for i in 0..new_tok.len() - 1 {
-                        let pair = (new_tok[i], new_tok[i+1]);
+                        let pair = (new_tok[i], new_tok[i + 1]);
 
                         pair_to_toks
                             .entry(pair)
                             .or_insert_with(HashSet::new)
                             .insert(new_tok.clone());
-                        
 
                         *pair_to_count.entry(pair).or_default() += tok_count;
 
                         heap.push(PairHeapEntry {
                             count: pair_to_count[&pair],
-                            pair: (interner.get_bytes(pair.0).to_vec(), interner.get_bytes(pair.1).to_vec()),
+                            pair: (
+                                interner.get_bytes(pair.0).to_vec(),
+                                interner.get_bytes(pair.1).to_vec(),
+                            ),
                         });
-
                     }
                 }
-            }           
+            }
         }
-    };
+    }
     Ok(max_pairs)
 }
 
-
 #[pyfunction]
-fn rusty_full_merge(filepath: &str, boundaries: Vec<u64>, special_tokens:Vec<String>, max: usize) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
-    let (tok_to_count,mut interner) = rusty_get_pre_toks(filepath, boundaries, special_tokens).unwrap();
+fn rusty_full_merge(
+    filepath: &str,
+    boundaries: Vec<u64>,
+    special_tokens: Vec<String>,
+    max: usize,
+) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
+    let (tok_to_count, mut interner) =
+        rusty_get_pre_toks(filepath, boundaries, special_tokens).unwrap();
     return rusty_merge(tok_to_count, max, &mut interner);
 }
 
