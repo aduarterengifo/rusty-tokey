@@ -1,9 +1,9 @@
-use crate::TokenInterner;
+use crate::{token_interner::TokenId, VocabInterner};
 
 #[derive(Debug, Clone)]
-struct LinkedArrayNode<T> {
-    elem: T,
-    idx: usize,
+pub struct LinkedArrayNode<T> {
+    pub elem: T,
+    pub idx: usize,
     next: Option<usize>,
     prev: Option<usize>
 }
@@ -11,9 +11,9 @@ struct LinkedArrayNode<T> {
 
 pub struct LinkedArray<T> {
     vec: Vec<Option<LinkedArrayNode<T>>>,
-    interner: TokenInterner
 }
 
+#[derive(Debug)]
 pub enum MergeError {
     InvalidIndex, 
     LastElement, 
@@ -22,7 +22,7 @@ pub enum MergeError {
 }
 
 impl LinkedArray<u32> {
-    fn new(vec: Vec<u32>, interner: TokenInterner) -> LinkedArray<u32> {
+    pub fn new(vec: Vec<u32>) -> LinkedArray<u32> {
         // create vec that will hold linked-array-nodes. 
         let mut new_vec: Vec<Option<LinkedArrayNode<u32>>> = Vec::with_capacity(vec.len());
 
@@ -39,14 +39,13 @@ impl LinkedArray<u32> {
 
         LinkedArray {
             vec: new_vec,
-            interner
         }
     }
 
     // morally, I can just act conditionally, and do nothing otherwise, 
     // but then what if my callee, wants to do something conditionally on my actions?
     // in that case I am truly and fully fucked.
-    fn replace_pair(&mut self, idx: usize, token_id: u32) -> Result<(), MergeError> {
+    pub fn replace_pair(&mut self, idx: usize, interner: &mut VocabInterner) -> Result<Vec<u32>, MergeError> {
         if idx >= self.vec.len() {
             return Err(MergeError::InvalidIndex)
         }
@@ -61,15 +60,15 @@ impl LinkedArray<u32> {
         };
 
         // get new token id 
-        let fst_bytes = self.interner.get_bytes(fst_elem);
-        let snd_bytes = self.interner.get_bytes(snd_elem);
+        let fst_bytes = interner.get(fst_elem);
+        let snd_bytes = interner.get(snd_elem);
 
         let mut merged_bytes = Vec::with_capacity(fst_bytes.len() + snd_bytes.len());
 
         merged_bytes.extend_from_slice(fst_bytes);
         merged_bytes.extend_from_slice(snd_bytes);
 
-        let new_token_id = self.interner.intern(merged_bytes);
+        let new_token_id = interner.intern(merged_bytes);
 
         // mutate first element.
         if let Some(fst) = self.vec[idx].as_mut() {
@@ -87,10 +86,18 @@ impl LinkedArray<u32> {
         // remove snd.
         self.vec[snd_idx] = None;
 
-        Ok(())
-    }   
+        let res: Vec<TokenId> = self.vec.iter().filter_map(|x| x.clone().map(|y| y.elem)).collect();
 
-    fn prev(&self, idx: usize) -> Option<&LinkedArrayNode<u32>> {   
+        Ok(res)
+    } 
+
+    pub fn get(&self, idx: usize) -> Option<&LinkedArrayNode<u32>> {   
+        // Monadic bind style - chain the operations
+        self.vec.get(idx)
+            .and_then(|node| node.as_ref())
+    }  
+
+    pub fn prev(&self, idx: usize) -> Option<&LinkedArrayNode<u32>> {   
         // Monadic bind style - chain the operations
         self.vec.get(idx)
             .and_then(|node| node.as_ref())
@@ -99,7 +106,7 @@ impl LinkedArray<u32> {
             .and_then(|node| node.as_ref())
     }
 
-    fn next(&self, idx: usize) -> Option<&LinkedArrayNode<u32>> {
+    pub fn next(&self, idx: usize) -> Option<&LinkedArrayNode<u32>> {
         // Monadic bind style - chain the operations
         self.vec.get(idx)
             .and_then(|node| node.as_ref())
