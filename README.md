@@ -31,3 +31,11 @@ python test.py
 - Outputs vocabulary and merge operations
 
 Core algorithm in Rust for speed. Python handles I/O and orchestration.
+
+## Future Work 
+
+- [ ] fix linked-array implementation.
+
+## Acknowledgements 
+
+Made while following CS336. 
