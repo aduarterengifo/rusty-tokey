@@ -3,6 +3,7 @@ use interner::TokenIdsId;
 use interner::VocabInterner;
 use interner::TokSeqInterner;
 use linked_array::LinkedArray;
+use linked_array::LinkedArrayNode;
 use once_cell::sync::Lazy;
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -56,8 +57,6 @@ fn decrement_or_remove<T: std::cmp::Eq + Hash>(
     }
 }
 
-// borrows:
-//   tok_to_count: hashmap
 fn get_pairs(
     tok_to_count: &HashMap<TokenIdsId, usize>,
     vocab_interner: &mut VocabInterner,
@@ -204,6 +203,53 @@ fn rusty_get_pre_toks(
     Ok((result, vocab_interner, tok_seq_interner))
 }
 
+fn get_adjacent_pairs(linked_tok: &LinkedArray<u32>, position: usize) -> Vec<(&LinkedArrayNode<u32>, &LinkedArrayNode<u32>)> {
+    let mut pairs = Vec::new();
+    
+    if let Some(curr) = linked_tok.get(position) {
+        // Previous pair
+        if let Some(prev) = linked_tok.prev(position) {
+            pairs.push((prev, curr));
+        }
+        
+        // Next pair
+        if let Some(next) = linked_tok.next(position) {
+            if let Some(next_next) = linked_tok.next(next.idx) {
+                pairs.push((next, next_next));
+            }
+        }
+    }
+    
+    pairs
+}
+
+fn old_pair_accounting(pair: (u32,u32), tok_id: u32, tok_count: usize, heap: &mut BinaryHeap<PairHeapEntry>, pair_to_toks : &mut HashMap<(u32, u32), HashMap<u32, HashSet<usize>>>,pair_to_count: &mut HashMap<(u32, u32), usize>, vocab_interner: &mut VocabInterner) -> () {
+    // if there is a map associated with prev_pair
+    if let Some(map) = pair_to_toks.get_mut(&pair) {
+        // remote it.
+        map.remove(&tok_id);
+    }
+    
+    // if there is a count associated with prev_pair
+    if let Some(count) = pair_to_count.get_mut(&pair) {
+        // substract tok_count from it.
+        *count = count.saturating_sub(tok_count);
+        // if its bigger than 0 add it to the heap.
+        if *count > 0 {
+            heap.push(PairHeapEntry {
+                count: *count,
+                pair: (
+                    vocab_interner.get(pair.0).to_vec(),
+                    vocab_interner.get(pair.1).to_vec(),
+                ),
+            });
+        } else {
+        // if the count associated with prev_pair is 0 remove entry.
+            pair_to_count.remove(&pair);
+        }
+    }
+}
+
 fn rusty_merge(
     mut tok_to_count: HashMap<TokenIdsId, usize>,
     max: usize,
@@ -228,8 +274,6 @@ fn rusty_merge(
                     vocab_interner.get(max_pair.1).to_vec(),
                 ));
 
-                // let tokens_to_process: (TokenIdsId, HashSet<usize>) =
-                //     pair_to_toks[&max_pair].into_iter().cloned().collect();
                 // for every tok that contains max_pair
                 for (tok_id, positions) in pair_to_toks[&max_pair].clone().into_iter() {
                     // for every position 
@@ -252,80 +296,11 @@ fn rusty_merge(
                                 LinkedArray::new(tok_vec)
                             });
 
-                        let prev_opt = linked_tok.prev(position);
-                        // println!("prev_opt {:?}", prev_opt);
-                        // prev_pair exists
-                        if let Some(prev) = prev_opt {
-                            let prev_elem = prev.elem;
-                            let prev_pair = (prev_elem, tok[position]);
-                            
-                            match pair_to_toks.entry(prev_pair) {
-                                std::collections::hash_map::Entry::Occupied(mut e) => {
-                                    let map = e.get_mut();
-
-                                    // remove from pair's toks.
-                                    map.remove(&tok_id);
-                                }
-                                std::collections::hash_map::Entry::Vacant(_) => {}
-                            }
-
-                            match pair_to_count.entry(prev_pair) {
-                                std::collections::hash_map::Entry::Occupied(mut e) => {
-                                    *e.get_mut() = e.get_mut().saturating_sub(tok_count); // remove tok_count from pair count.
-
-                                    if *e.get() > 0 {
-                                        heap.push(PairHeapEntry {
-                                            count: *e.get(),
-                                            pair: (
-                                                vocab_interner.get(prev_pair.0).to_vec(),
-                                                vocab_interner.get(prev_pair.1).to_vec(),
-                                            ),
-                                        });
-                                    } else {
-                                        e.remove();
-                                    }
-                                }
-                                std::collections::hash_map::Entry::Vacant(_) => {}
-                            };
+                        for node_pair in get_adjacent_pairs(&linked_tok, position) {
+                            let pair = (node_pair.0.elem, node_pair.1.elem);
+                            old_pair_accounting(pair, tok_id, tok_count, &mut heap, &mut pair_to_toks, &mut pair_to_count, vocab_interner);
                         }
 
-                        // next_pair exists 
-                        if let Some(next) = linked_tok.next(position) {
-                            if let Some(next_next) = linked_tok.next(next.idx){
-                                let next_pair = (next.elem,next_next.elem);
-
-                                match pair_to_toks.entry(next_pair) {
-                                    std::collections::hash_map::Entry::Occupied(mut e) => {
-                                        let map = e.get_mut();
-
-                                        // remove from pair's toks.
-                                        map.remove(&tok_id);
-                                    }
-                                    std::collections::hash_map::Entry::Vacant(_) => {}
-                                }
-
-                                match pair_to_count.entry(next_pair) {
-                                    std::collections::hash_map::Entry::Occupied(mut e) => {
-                                        *e.get_mut() = e.get_mut().saturating_sub(tok_count); // remove tok_count from pair count.
-
-                                        if *e.get() > 0 {
-                                            heap.push(PairHeapEntry {
-                                                count: *e.get(),
-                                                pair: (
-                                                    vocab_interner.get(next_pair.0).to_vec(),
-                                                    vocab_interner.get(next_pair.1).to_vec(),
-                                                ),
-                                            });
-                                        } else {
-                                            e.remove();
-                                        }
-                                    }
-                                    std::collections::hash_map::Entry::Vacant(_) => {}
-                                };
-                            }
-                        }
-
-                        //println!("Attempting to merge at position {} in token of length {}, tok {}", position, tok.len(), tok.iter().map(|vocab| String::from_utf8(vocab_interner.get(*vocab).to_vec()).unwrap()).collect::<Vec<_>>().join("|"));
                         let new_tok = match linked_tok.replace_pair(position, vocab_interner) {
                             Ok(tok) => tok,
                             Err(e) => {
@@ -333,9 +308,6 @@ fn rusty_merge(
                                 continue; // Skip this position and continue with next
                             }
                         };
-
-                        //let cow: Vec<u8> = new_tok.iter().map(|vocab| String::from_utf8(vocab_interner.get(*vocab).to_vec()).unwrap());
-                        let save = tok.iter().map(|vocab| String::from_utf8(vocab_interner.get(*vocab).to_vec()).unwrap()).collect::<Vec<_>>().join("");
                         
                         let new_interned_tok = tok_seq_interner.intern(new_tok.to_vec());
 
@@ -344,44 +316,25 @@ fn rusty_merge(
                         // increment new_tok count by tok_count
                         *tok_to_count.entry(new_interned_tok).or_default() += tok_count;
 
-                        // decrement tok count by tok_count
-                        // if tok_count is zero -> remove tok entry all together.
-                        decrement_or_remove(&mut tok_to_count, interned_tok, tok_count);
+                        if let Some(count) = tok_to_count.get_mut(&interned_tok) {
+                            *count = count.saturating_sub(tok_count);
+                            if *count == 0 {
+                                tok_to_count.remove(&interned_tok);
+                            }
+                        }
 
-                        // for every pair in new_tok
-                        let prev_opt = linked_tok.prev(position);
-                        
-                        if let Some(curr) = linked_tok.get(position) {
-                            // prev_pair exists
-                            if let Some(prev) = prev_opt {
-                                let prev_elem = prev.elem;
-                                let prev_pair = (prev_elem,curr.elem);
 
-                                pair_to_toks
-                                    .entry(prev_pair)
+                        for node_pair in get_adjacent_pairs(&linked_tok, position) {
+                            let pair = (node_pair.0.elem, node_pair.1.elem);
+
+                            pair_to_toks
+                                    .entry(pair)
                                     .or_insert_with(HashMap::new)
                                     .entry(new_interned_tok)
                                     .or_insert_with(HashSet::new)
-                                    .insert(prev.idx);
+                                    .insert(node_pair.0.idx);
 
-                                *pair_to_count.entry(prev_pair).or_default() += tok_count;
-                            }
-
-                            // next_pair exists 
-                            if let Some(next) = linked_tok.next(position) {
-                                if let Some(next_next) = linked_tok.next(next.idx){
-                                    let next_pair = (next.elem,next_next.elem);
-                                
-                                    pair_to_toks
-                                        .entry(next_pair)
-                                        .or_insert_with(HashMap::new)
-                                        .entry(new_interned_tok)
-                                        .or_insert_with(HashSet::new)
-                                        .insert(position);
-
-                                    *pair_to_count.entry(next_pair).or_default() += tok_count;
-                                }
-                            }
+                            *pair_to_count.entry(pair).or_default() += tok_count;
                         }
                     }
                 }
